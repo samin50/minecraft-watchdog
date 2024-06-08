@@ -1,4 +1,4 @@
-# pylint: disable=missing-module-docstring, broad-exception-caught, invalid-name, line-too-long, import-error, no-member
+# pylint: disable=missing-module-docstring, broad-exception-caught, invalid-name, line-too-long, import-error, no-member, bare-except
 # pylance: reportGeneralTypeIssues=false
 import os
 import sys
@@ -9,9 +9,12 @@ from requests.packages import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 if len(sys.argv) > 1:
-    print("Testing watchdog")
-    from dotenv import load_dotenv
-    load_dotenv()
+    try:
+        print("Testing watchdog")
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+    except:
+        print("Failed to load .env file")
 
 def get_req_var(name):
     """
@@ -41,84 +44,103 @@ def update_ecs_service(cluster_name, service_name, desired_count):
 
 def server_running(server_ids):
     """
-    Check if the server is running
+    Check if any server is running
     """
-    return any(session.get(f'https://{SERVERADDRESS}:{CRAFTYPORT}/api/v2/servers/{id}/stats', timeout=10, verify=False).json()["data"]["running"] for id in server_ids)
+    res = []
+    try:
+        res = [session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2/servers/{id}/stats', verify=False).json()["data"]["running"] for id in server_ids]
+    except:
+        pass
+    return any(res)
 
 def players_on(server_ids):
     """
     Check if the server is running
     """
-    return any(session.get(f'https://{SERVERADDRESS}:{CRAFTYPORT}/api/v2/servers/{id}/stats', timeout=10, verify=False).json()["data"]["online"] for id in server_ids)
+    res = []
+    try:
+        res = [session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2/servers/{id}/stats', verify=False).json()["data"]["online"] for id in server_ids]
+    except:
+        pass
+    return any(res)
 
 CLUSTER = get_req_var('CLUSTER')
 SERVICE = get_req_var('SERVICE')
 TOKEN = get_req_var('TOKEN')
 
-CRAFTYPORT = os.environ.get('CRAFTYPORT', 8443)
-SERVERADDRESS = os.environ.get('SERVERADDRESS', 'localhost')
-STARTUPTIMEMIN = int(os.environ.get('STARTUPTIMEMIN', 10))
-SHUTDOWNMIN = int(os.environ.get('SHUTDOWNMIN', 10))
+SERVERNAME = os.environ.get('SERVERNAME', 'localhost')
+CRAFTYPORT = int(os.environ.get('CRAFTYPORT', "8443"))
+STARTUPMIN = int(os.environ.get('STARTUPMIN', "10"))
+SHUTDOWNMIN = int(os.environ.get('SHUTDOWNMIN', "10"))
 
 HEADERS = {
     "Authorization": TOKEN
 }
 
+VERSION = os.environ.get('VERSION', 'Unknown')
+
 session = requests.Session()
 session.headers.update(HEADERS)
 
-print(f"Waiting at least {STARTUPTIMEMIN} minutes for Crafty to start")
-counter = 0
+print(f"Watchdog version: {VERSION}")
+print(f"Waiting at least {STARTUPMIN} minutes for Crafty to start")
+connected = False
+startTime = time.time()
 # Check if Crafty is up
-while counter < STARTUPTIMEMIN * 60:
-    counter += 1
-    if session.get(f'https://{SERVERADDRESS}:{CRAFTYPORT}/api/v2', timeout=10, verify=False).status_code == 200:
-        print("Crafty is up")
-        break
+while time.time() - startTime < STARTUPMIN * 60:
+    try:
+        # Check if Crafty is up
+        if not connected and session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2', verify=False).status_code == 200:
+            print("Crafty is up")
+            connected = True
+        # Get all server ids but only if connected
+        if connected:
+            SERVER_IDS = [server["server_id"] for server in session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2/servers', verify=False).json()["data"]]
+            break
+    except:
+        pass
     time.sleep(1)
-if counter == STARTUPTIMEMIN * 60:
+if not connected:
     print("Crafty did not start in time")
     update_ecs_service(CLUSTER, SERVICE, 0)
     sys.exit(1)
 
+print(f"Crafty took {time.time() - startTime} seconds to start")
 # Grab all crafty servers
-SERVER_IDS = [server["server_id"] for server in session.get(f'https://{SERVERADDRESS}:{CRAFTYPORT}/api/v2/servers', timeout=10, verify=False).json()["data"]]
 print("Servers:", SERVER_IDS)
 
 # Check if any servers running
 connected = False
-counter = 0
+startTime = time.time()
 while not connected:
     connected = server_running(SERVER_IDS)
     if connected:
         print("Servers are running.")
         break
     # Wait for 60 seconds
-    counter += 1
     for _ in range(60):
         time.sleep(1)
     # Time to shutdown
-    if counter == STARTUPTIMEMIN:
+    if time.time() - startTime > SHUTDOWNMIN * 60:
         print("No servers running, terminating.")
         update_ecs_service(CLUSTER, SERVICE, 0)
         sys.exit(1)
 
 # Shutdown watcher
-counter = 0
-while counter < SHUTDOWNMIN:
+print(f"Waiting for at least {SHUTDOWNMIN} minutes of server inactivity.")
+startTime = time.time()
+while time.time() - startTime < SHUTDOWNMIN * 60:
     playersOn = players_on(SERVER_IDS)
     if not playersOn:
         print("No players online.")
-        counter += 1
-        for _ in range(60):
-            time.sleep(1)
     else:
-        print("Players online, resetting counter.")
-        counter = 0
-        # Check every 20 seconds
-        time.sleep(20)
+        print("Players online, resetting timer.")
+        startTime = time.time()
+    # Wait for 20 seconds
+    for _ in range(20):
+        time.sleep(1)
 # Time to shutdown
-if counter == SHUTDOWNMIN:
+if time.time() - startTime > SHUTDOWNMIN * 60:
     print("No players online. Terminating.")
     update_ecs_service(CLUSTER, SERVICE, 0)
     sys.exit(1)
