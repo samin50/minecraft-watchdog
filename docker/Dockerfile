@@ -7,7 +7,7 @@ COPY . .
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir boto3 requests urllib3
 
-ENV VERSION='1.0.0'
+ENV VERSION='1.3.0'
 
 # Run watchdog.py when the container launches
-ENTRYPOINT ["python", "./watchdog.py"]
+ENTRYPOINT ["python", "-u", "./watchdog.py"]

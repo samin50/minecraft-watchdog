@@ -29,16 +29,14 @@ def update_ecs_service(cluster_name, service_name, desired_count):
     """
     Update the ECS service with the desired count
     """
-    # Create an ECS client
-    ecs_client = boto3.client('ecs')
     # Update the ECS service
     try:
-        response = ecs_client.update_service(
+        resp = ECS_CLIENT.update_service(
             cluster=cluster_name,
             service=service_name,
             desiredCount=desired_count
         )
-        print("Update Service Response:", response)
+        print("Update Service Response:", resp)
     except Exception as e:
         print("Error updating ECS service:", str(e))
 
@@ -48,7 +46,7 @@ def server_running(server_ids):
     """
     res = []
     try:
-        res = [session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2/servers/{id}/stats', verify=False).json()["data"]["running"] for id in server_ids]
+        res = [SESSION.get(f'https://{CRAFTYSERVERIP}:{CRAFTYPORT}/api/v2/servers/{id}/stats', verify=False).json()["data"]["running"] for id in server_ids]
     except:
         pass
     return any(res)
@@ -59,7 +57,7 @@ def players_on(server_ids):
     """
     res = []
     try:
-        res = [session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2/servers/{id}/stats', verify=False).json()["data"]["online"] for id in server_ids]
+        res = [SESSION.get(f'https://{CRAFTYSERVERIP}:{CRAFTYPORT}/api/v2/servers/{id}/stats', verify=False).json()["data"]["online"] for id in server_ids]
     except:
         pass
     return any(res)
@@ -67,8 +65,10 @@ def players_on(server_ids):
 CLUSTER = get_req_var('CLUSTER')
 SERVICE = get_req_var('SERVICE')
 TOKEN = get_req_var('TOKEN')
+DNSZONE = get_req_var('DNSZONE')
 
 SERVERNAME = os.environ.get('SERVERNAME', 'localhost')
+CRAFTYSERVERIP = os.environ.get('CRAFTYSERVERIP', 'localhost')
 CRAFTYPORT = int(os.environ.get('CRAFTYPORT', "8443"))
 STARTUPMIN = int(os.environ.get('STARTUPMIN', "10"))
 SHUTDOWNMIN = int(os.environ.get('SHUTDOWNMIN', "10"))
@@ -79,8 +79,59 @@ HEADERS = {
 
 VERSION = os.environ.get('VERSION', 'Unknown')
 
-session = requests.Session()
-session.headers.update(HEADERS)
+# Create clients
+ECS_CLIENT = boto3.client('ecs')
+EC2_CLIENT = boto3.client('ec2')
+ROUTE53_CLIENT = boto3.client('route53')
+SESSION = requests.Session()
+
+# DNS updates
+METADATA_URI = os.getenv("ECS_CONTAINER_METADATA_URI_V4")
+response = SESSION.get(f"{METADATA_URI}/task")
+task_arn = response.json()["TaskARN"]
+task_id = task_arn.split("/")[-1]
+print(f"Task ID: {task_id}")
+# Get ENI
+attachments = ECS_CLIENT.describe_tasks(
+    cluster=CLUSTER,
+    tasks=[task_id]
+)["tasks"][0]["attachments"]
+for detail in attachments[0]["details"]:
+    if detail["name"] == "networkInterfaceId":
+        eni = detail["value"]
+        break
+print(f"ENI: {eni}")
+# Get public IP
+publicIp = EC2_CLIENT.describe_network_interfaces(
+    NetworkInterfaceIds=[eni]
+)["NetworkInterfaces"][0]["Association"]["PublicIp"]
+print(f"Public IP: {publicIp}")
+# Update Route53
+response = ROUTE53_CLIENT.change_resource_record_sets(
+    HostedZoneId=os.getenv("DNSZONE"),
+    ChangeBatch={
+        "Comment": "Update DNS record for Crafty server",
+        "Changes": [
+            {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                    "Name": SERVERNAME,
+                    "Type": "A",
+                    "TTL": 30,
+                    "ResourceRecords": [
+                        {
+                            "Value": publicIp
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+)
+
+
+# Crafty
+SESSION.headers.update(HEADERS)
 
 print(f"Watchdog version: {VERSION}")
 print(f"Waiting at least {STARTUPMIN} minutes for Crafty to start")
@@ -90,12 +141,12 @@ startTime = time.time()
 while time.time() - startTime < STARTUPMIN * 60:
     try:
         # Check if Crafty is up
-        if not connected and session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2', verify=False).status_code == 200:
+        if not connected and SESSION.get(f'https://{CRAFTYSERVERIP}:{CRAFTYPORT}/api/v2', verify=False).status_code == 200:
             print("Crafty is up")
             connected = True
         # Get all server ids but only if connected
         if connected:
-            SERVER_IDS = [server["server_id"] for server in session.get(f'https://{SERVERNAME}:{CRAFTYPORT}/api/v2/servers', verify=False).json()["data"]]
+            SERVER_IDS = [server["server_id"] for server in SESSION.get(f'https://{CRAFTYSERVERIP}:{CRAFTYPORT}/api/v2/servers', verify=False).json()["data"]]
             break
     except:
         pass
