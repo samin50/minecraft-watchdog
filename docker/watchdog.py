@@ -84,6 +84,7 @@ ECS_CLIENT = boto3.client('ecs')
 EC2_CLIENT = boto3.client('ec2')
 ROUTE53_CLIENT = boto3.client('route53')
 SESSION = requests.Session()
+print("Watchdog starting...")
 
 # DNS updates
 METADATA_URI = os.getenv("ECS_CONTAINER_METADATA_URI_V4")
@@ -152,11 +153,11 @@ while time.time() - startTime < STARTUPMIN * 60:
         pass
     time.sleep(1)
 if not connected:
-    print("Crafty did not start in time")
+    print("Crafty did not start in time.")
     update_ecs_service(CLUSTER, SERVICE, 0)
     sys.exit(1)
 
-print(f"Crafty took {time.time() - startTime} seconds to start")
+print(f"Crafty took {time.time() - startTime} seconds to start.")
 # Grab all crafty servers
 print("Servers:", SERVER_IDS)
 
@@ -183,7 +184,7 @@ startTime = time.time()
 while time.time() - startTime < SHUTDOWNMIN * 60:
     playersOn = players_on(SERVER_IDS)
     if not playersOn:
-        print("No players online.")
+        print(f"No players online. Time: {time.time() - startTime}.")
     else:
         print("Players online, resetting timer.")
         startTime = time.time()
